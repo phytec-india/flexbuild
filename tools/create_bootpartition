@@ -7,14 +7,86 @@
 
 
 generate_bootpartition_tarball() {
-    # check kernel image
-    [ -f $KERNEL_PATH/Makefile ] || bld repo-fetch linux
-    curbrch=`cd $KERNEL_PATH && git branch | grep ^* | cut -d' ' -f2`
-    [ ! -f $kernel_img -o ! -f $KERNEL_OUTPUT_PATH/$curbrch/include/config/kernel.release ] && \
-    echo Building the dependent $kernel_img ... && \
-    bld linux -p $SOCFAMILY -a $DESTARCH
+    # For imx8mm_phygate-tauri-l, create boot_partition as extra folder inside boot_IMX_arm64 and copy required files
+    if [ "$MACHINE" = "imx8mm_phygate-tauri-l" ]; then
+        bootdir="$FBOUTDIR/images/boot_IMX_arm64_phytec"
+        bootpartdir="$bootdir/boot_partition_phygate-tauri-imx8mm"
+        mkdir -p "$bootpartdir"
+        # Color codes
+        GREEN='\033[0;32m'
+        RED='\033[0;31m'
+        NC='\033[0m' # No Color
+        # Use PHYTEC build output path for all artifacts
+        phytec_path="$FBOUTDIR/linux/linux-phytec/arm64/IMX"
+        image_src="$phytec_path/Image"
+        if [ -f "$image_src" ]; then
+            echo -e "${GREEN}[INFO] Copying kernel Image from $image_src to $bootpartdir${NC}"
+            cp -f "$image_src" "$bootpartdir/"
+        else
+            echo -e "${RED}[WARN] Kernel Image not found at $image_src${NC}"
+        fi
+        # Remove any previously copied overlays (defensive, in case of re-run)
+        find "$bootpartdir" -maxdepth 1 -type f -name 'imx8mm-*.dtbo' -exec rm -f {} +
+        overlays_dir="$phytec_path/output/v5.15.71_2.2.2-phy3/arch/arm64/boot/dts/freescale/overlays"
+        if [ -d "$overlays_dir" ]; then
+            echo -e "${GREEN}[INFO] Copying overlays (imx8mm-*.dtbo) from $overlays_dir to $bootpartdir${NC}"
+            cp -f $overlays_dir/imx8mm-*.dtbo "$bootpartdir/" 2>/dev/null || echo -e "${RED}[WARN] No imx8mm-*.dtbo overlays found in $overlays_dir${NC}"
+        else
+            echo -e "${RED}[WARN] Overlays directory not found at $overlays_dir${NC}"
+        fi
+        oftree_src="$phytec_path/oftree"
+        if [ -f "$oftree_src" ]; then
+            echo -e "${GREEN}[INFO] Copying oftree from $oftree_src to $bootpartdir${NC}"
+            cp -f "$oftree_src" "$bootpartdir/"
+        else
+            echo -e "${RED}[WARN] Oftree file not found at $oftree_src${NC}"
+        fi
+        imxboot_src="$FBOUTDIR/images/imx-boot"
+        if [ -f "$imxboot_src" ]; then
+            echo -e "${GREEN}[INFO] Copying imx-boot from $imxboot_src to $bootpartdir${NC}"
+            cp -f "$imxboot_src" "$bootpartdir/"
+        else
+            echo -e "${RED}[WARN] imx-boot not found at $imxboot_src${NC}"
+        fi
+    fi
+    # For PHYTEC imx8mm_phygate-tauri-l, use linux-phytec outputs and skip default kernel build/module steps
+    if [ "$MACHINE" = "imx8mm_phygate-tauri-l" ]; then
+        # Already handled above: kernel, overlays, oftree, imx-boot
+        # For PHYTEC board, place kernel modules and firmware outside boot_partition
+        fbprint_n "Placing kernel modules and firmware outside boot_partition ..."
+        phytec_modpath="$FBOUTDIR/linux/linux-phytec/arm64/IMX/output/v5.15.71_2.2.2-phy3/tmp/lib/modules"
+        phytec_firmware_src="$FBDIR/build_lsdk2506/bsp/imx_firmware/lib/firmware"
+        phytec_moddest="$bootdir/modules"
+        phytec_firmdest="$bootdir/firmware"
+        if [ -d "$phytec_modpath" ]; then
+            # Only copy if not already present
+                if [ ! -d "$phytec_moddest" ]; then
+                    cp -rf "$phytec_modpath" "$phytec_moddest/"
+                    modversion=$(ls "$phytec_modpath" | xargs echo | cut -d' ' -f1)
+                    rm -f "$phytec_moddest/$modversion/build" "$phytec_moddest/$modversion/source"
+                else
+                    echo -e "${GREEN}[INFO] 'modules' directory already exists at $phytec_moddest/modules${NC}"
+            fi
+        else
+            echo -e "${RED}[WARN] Kernel modules not found at $phytec_modpath${NC}"
+        fi
+        if [ -d "$phytec_firmware_src" ]; then
+            mkdir -p "$phytec_firmdest"
+            cp -Prf "$phytec_firmware_src"/* "$phytec_firmdest/"
+        else
+            echo -e "${RED}[WARN] Firmware not found at $phytec_firmware_src${NC}"
+        fi
+        return
+    else
+        # check kernel image
+        [ -f $KERNEL_PATH/Makefile ] || bld repo-fetch linux
+        curbrch=`cd $KERNEL_PATH && git branch | grep ^* | cut -d' ' -f2`
+        [ ! -f $kernel_img -o ! -f $KERNEL_OUTPUT_PATH/$curbrch/include/config/kernel.release ] && \
+        echo Building the dependent $kernel_img ... && \
+        bld linux -p $SOCFAMILY -a $DESTARCH
 
-    [ ! -d $PKGDIR/linux/cryptodev_linux ] && bld linux-modules -p $SOCFAMILY -a $DESTARCH
+        [ ! -d $PKGDIR/linux/cryptodev_linux ] && bld linux-modules -p $SOCFAMILY -a $DESTARCH
+    fi
 
     bootpartname=boot_${SOCFAMILY}_${DESTARCH}
     bootpartdir=$FBOUTDIR/images/$bootpartname
@@ -25,16 +97,18 @@ generate_bootpartition_tarball() {
     [ -f  $FBOUTDIR/images/rootfs_${DISTRIB_VERSION}_poky_${DISTROVARIANT}_${DESTARCH}.cpio.gz ] && \
     cp -f $FBOUTDIR/images/rootfs_${DISTRIB_VERSION}_poky_${DISTROVARIANT}_${DESTARCH}.cpio.gz $bootpartdir
 
-    fbprint_n "Installing kernel and dtb ..."
-    [ -f $tiny_itb ] && cp -f $tiny_itb $bootpartdir
-    [ -f $base_itb ] && cp -f $base_itb $bootpartdir
-    kernelrelease=$(cat $KERNEL_OUTPUT_PATH/$curbrch/include/config/kernel.release)
-    [ $DESTARCH = arm64 ] && kernelimg=Image* || kernelimg=zImage*
-    cp -f $FBOUTDIR/linux/kernel/$DESTARCH/$SOCFAMILY/{*.dtb,$kernelimg,config-$kernelrelease} $bootpartdir
-    if [ $DESTARCH = arm64 ]; then
-	cp -f $FBOUTDIR/linux/kernel/$DESTARCH/$SOCFAMILY/vmlinuz-$kernelrelease $bootpartdir
-    elif [ $DESTARCH = arm32 ]; then
-	cp -f $FBOUTDIR/linux/kernel/$DESTARCH/$SOCFAMILY/uImage* $bootpartdir
+    if [ "$MACHINE" != "imx8mm_phygate-tauri-l" ]; then
+        fbprint_n "Installing kernel and dtb ..."
+        [ -f $tiny_itb ] && cp -f $tiny_itb $bootpartdir
+        [ -f $base_itb ] && cp -f $base_itb $bootpartdir
+        kernelrelease=$(cat $KERNEL_OUTPUT_PATH/$curbrch/include/config/kernel.release)
+        [ $DESTARCH = arm64 ] && kernelimg=Image* || kernelimg=zImage*
+        cp -f $FBOUTDIR/linux/kernel/$DESTARCH/$SOCFAMILY/{*.dtb,$kernelimg,config-$kernelrelease} $bootpartdir
+        if [ $DESTARCH = arm64 ]; then
+            cp -f $FBOUTDIR/linux/kernel/$DESTARCH/$SOCFAMILY/vmlinuz-$kernelrelease $bootpartdir
+        elif [ $DESTARCH = arm32 ]; then
+            cp -f $FBOUTDIR/linux/kernel/$DESTARCH/$SOCFAMILY/uImage* $bootpartdir
+        fi
     fi
 
     # install kernel modules
@@ -46,14 +120,18 @@ generate_bootpartition_tarball() {
     # install /lib/firmware
     mkdir -p $bootpartdir/firmware
     if [ $SOCFAMILY = IMX ]; then
-	[ ! -d $FBOUTDIR/bsp/imx_firmware/lib/firmware/imx/sof-gcc ] &&  bld sof_zephyr -a $DESTARCH -p $SOCFAMILY
-	[ ! -d $FBOUTDIR/bsp/imx_firmware/lib/firmware/imx/dsp ] && bld imx_dsp -a $DESTARCH -p $SOCFAMILY
-	[ ! -d $FBOUTDIR/bsp/imx_firmware/lib/firmware/imx/easrc ] && bld imx_firmware -a $DESTARCH -p $SOCFAMILY
-	[ ! -d $FBOUTDIR/bsp/imx_mcore_demos/imx93-m33-demo ] && bld mcore_demo -a $DESTARCH -p $SOCFAMILY
-	[ ! -d $DESTDIR/usr/lib/ethosu_firmware ] && bld ethosu_firmware -a $DESTARCH -p $SOCFAMILY
+    if [ "$MACHINE" != "imx8mm_phygate-tauri-l" ]; then
+        [ ! -d $FBOUTDIR/bsp/imx_firmware/lib/firmware/imx/sof-gcc ] &&  bld sof_zephyr -a $DESTARCH -p $SOCFAMILY
+        [ ! -d $FBOUTDIR/bsp/imx_firmware/lib/firmware/imx/dsp ] && bld imx_dsp -a $DESTARCH -p $SOCFAMILY
+        [ ! -d $DESTDIR/usr/lib/ethosu_firmware ] && bld ethosu_firmware -a $DESTARCH -p $SOCFAMILY
+    fi
+    [ ! -d $FBOUTDIR/bsp/imx_firmware/lib/firmware/imx/easrc ] && bld imx_firmware -a $DESTARCH -p $SOCFAMILY
+    [ ! -d $FBOUTDIR/bsp/imx_mcore_demos/imx93-m33-demo ] && bld mcore_demo -a $DESTARCH -p $SOCFAMILY
 
-	cp -Prf $FBOUTDIR/bsp/imx_firmware/lib/firmware/* $bootpartdir/firmware
-	cp -Prf $FBOUTDIR/bsp/imx_mcore_demos/imx93-m33-demo/imx93-*m33*.elf $DESTDIR/usr/lib/ethosu_firmware $bootpartdir/firmware
+        cp -Prf $FBDIR/build_lsdk2506/bsp/imx_firmware/lib/firmware/* $bootpartdir/firmware
+    if [ "$MACHINE" != "imx8mm_phygate-tauri-l" ]; then
+        cp -Prf $FBOUTDIR/bsp/imx_mcore_demos/imx93-m33-demo/imx93-*m33*.elf $DESTDIR/usr/lib/ethosu_firmware $bootpartdir/firmware
+    fi
      fi
 
     # install distro boot script
