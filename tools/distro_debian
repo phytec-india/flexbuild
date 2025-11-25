@@ -29,10 +29,44 @@ build_distro_rfs_debian() {
     fi
 
     if [ ! -f $PKGDIR/${DEBIAN_CODENAME}_${DISTROVARIANT}_$DESTARCH/rootfs/etc/buildinfo ]; then
-	[ -f /usr/bin/bdebstrap ] || log_mute $sudopt apt install -y bdebstrap
-	[ -f $PKGDIR/${DEBIAN_CODENAME}_${DISTROVARIANT}_$DESTARCH ] || \
-	log_mute $sudopt bdebstrap -c $FBDIR/configs/debian/${DISTROTYPE}_${DISTROVARIANT}_${DESTARCH}.yaml --name \
-	     $PKGDIR/${DEBIAN_CODENAME}_${DISTROVARIANT}_$DESTARCH $mirroropt -f
+			  [ -f /usr/bin/bdebstrap ] || log_mute $sudopt apt install -y bdebstrap
+
+			  # Ensure we have a local Debian archive keyring for mmdebstrap to use
+			  kr_dir="$FBDIR/tools/keys"
+			  kr="$kr_dir/debian-archive-keyring.gpg"
+			  if [ ! -f "$kr" ]; then
+					fbprint_n "Downloading Debian archive keyring..."
+					mkdir -p "$kr_dir"
+					cd "$kr_dir" || exit 1
+					keyring_deb=debian-archive-keyring_2025.1_all.deb
+					keyring_url=https://ftp.debian.org/debian/pool/main/d/debian-archive-keyring/$keyring_deb
+					if [ ! -f "$keyring_deb" ]; then
+						 wget -q "$keyring_url" || { fbprint_e "Failed to download $keyring_url"; exit 1; }
+					fi
+					dpkg-deb -x "$keyring_deb" temp_keyring
+					cp -f temp_keyring/usr/share/keyrings/debian-archive-keyring.gpg "$kr"
+					rm -rf temp_keyring "$keyring_deb"
+					fbprint_d "Debian keyring installed at $kr"
+					# Make the keyring available where mmdebstrap commonly expects it.
+					# Place copies inside the build tree so no system changes are required.
+					mkdir -p "$FBDIR/components_${DISTRIB_VERSION}/usr/share/keyrings"
+					cp -f "$kr" "$FBDIR/components_${DISTRIB_VERSION}/usr/share/keyrings/debian-archive-keyring.gpg"
+					mkdir -p "$FBDIR/usr/share/keyrings"
+					cp -f "$kr" "$FBDIR/usr/share/keyrings/debian-archive-keyring.gpg"
+					# If sudo is available, also install to host /usr/share/keyrings so absolute
+					# paths in YAML (e.g. /usr/share/keyrings/...) are satisfied. This is optional.
+					if command -v sudo >/dev/null 2>&1; then
+						$sudopt mkdir -p /usr/share/keyrings || true
+						$sudopt cp -f "$kr" /usr/share/keyrings/debian-archive-keyring.gpg || true
+					fi
+					cd $FBDIR || exit 1
+			  fi
+
+			  keyringopt=""; [ -f "$kr" ] && keyringopt="--keyring=$kr"
+
+			  [ -f $PKGDIR/${DEBIAN_CODENAME}_${DISTROVARIANT}_$DESTARCH ] || \
+			  log_mute $sudopt bdebstrap -c $FBDIR/configs/debian/${DISTROTYPE}_${DISTROVARIANT}_${DESTARCH}.yaml --name \
+					 $PKGDIR/${DEBIAN_CODENAME}_${DISTROVARIANT}_$DESTARCH $keyringopt $mirroropt -f
     fi
 
     [ -f $RFSDIR/etc/buildinfo ] || $sudopt rsync -aHAX $PKGDIR/${DEBIAN_CODENAME}_${DISTROVARIANT}_$DESTARCH/rootfs/* $RFSDIR
@@ -73,14 +107,58 @@ build_distro_rfs_debian() {
     # fix ping: socket: Operation not permitted
     $sudopt chmod u+s $RFSDIR/bin/ping
 
-    # fix login issue for desktop
-    if [ $DISTROVARIANT = desktop ]; then
-		sed -i "s/.*pam_nologin.*/auth    requisite       pam_nologin.so nullok/" $RFSDIR/etc/pam.d/gdm-password
-		sed -e  's/.*AutomaticLoginEnable.*/AutomaticLoginEnable = true/'  -e '0,/user1/s/.*user1.*/AutomaticLogin = debian/'  -i $RFSDIR/etc/gdm3/daemon.conf
-		sed -i '$a\[Install]\nWantedBy=graphical.target\n' $RFSDIR/lib/systemd/system/gdm.service
-		rm -rf $RFSDIR/etc/systemd/system/display-manager.service
-		ln -sf /lib/systemd/system/gdm.service $RFSDIR/etc/systemd/system/graphical.target.wants/gdm.service
-    fi
+	# fix login issue for desktop
+	if [ $DISTROVARIANT = desktop ]; then
+		$sudopt sed -i "s/.*pam_nologin.*/auth    requisite       pam_nologin.so nullok/" $RFSDIR/etc/pam.d/gdm-password
+		$sudopt sed -e  's/.*AutomaticLoginEnable.*/AutomaticLoginEnable = true/'  -e '0,/user1/s/.*user1.*/AutomaticLogin = debian/'  -i $RFSDIR/etc/gdm3/daemon.conf
+		$sudopt sed -i '$a\[Install]\nWantedBy=graphical.target\n' $RFSDIR/lib/systemd/system/gdm.service
+		$sudopt rm -rf $RFSDIR/etc/systemd/system/display-manager.service
+		$sudopt ln -sf /lib/systemd/system/gdm.service $RFSDIR/etc/systemd/system/graphical.target.wants/gdm.service
+	fi
 
-    fbprint_d $RFSDIR
-}
+	# NOTE: The following firmware and modules installation is ONLY for imx8mm_phygate-tauri-l.
+	# For other boards, this step is not performed.
+	# Install firmware and modules for imx8mm_phygate-tauri-l
+	if [ "$MACHINE" = "imx8mm_phygate-tauri-l" ]; then
+		imgdir=$FBOUTDIR/images/boot_IMX_arm64_phytec
+		# Remove symlinks or non-directories for /lib/firmware and /lib/modules before copying
+		if [ -L "$RFSDIR/lib/firmware" ] || { [ -e "$RFSDIR/lib/firmware" ] && [ ! -d "$RFSDIR/lib/firmware" ]; }; then
+			fbprint_n "[DEBUG] Removing symlink or non-directory $RFSDIR/lib/firmware ..."
+			ls -l "$RFSDIR/lib/firmware" || true
+			$sudopt rm -f "$RFSDIR/lib/firmware"
+			fbprint_n "[DEBUG] Removed $RFSDIR/lib/firmware"
+		fi
+		if [ -L "$RFSDIR/lib/modules" ] || { [ -e "$RFSDIR/lib/modules" ] && [ ! -d "$RFSDIR/lib/modules" ]; }; then
+			fbprint_n "[DEBUG] Removing symlink or non-directory $RFSDIR/lib/modules ..."
+			ls -l "$RFSDIR/lib/modules" || true
+			$sudopt rm -f "$RFSDIR/lib/modules"
+			fbprint_n "[DEBUG] Removed $RFSDIR/lib/modules"
+		fi
+		# Show state before copy
+		fbprint_n "[DEBUG] Before copy: ls -ld $RFSDIR/lib/firmware $RFSDIR/lib/modules"
+		ls -ld "$RFSDIR/lib/firmware" "$RFSDIR/lib/modules" || true
+		# Copy firmware and modules folders if they exist
+		if [ -d "$imgdir/firmware" ]; then
+			fbprint_n "[DEBUG] Copying $imgdir/firmware/* to $RFSDIR/lib/firmware"
+			$sudopt mkdir -p "$RFSDIR/lib/firmware"
+			$sudopt cp -a "$imgdir/firmware/." "$RFSDIR/lib/firmware/"
+			fbprint_d "Copied firmware contents to $RFSDIR/lib/firmware"
+		else
+			fbprint_w "Firmware folder not found at $imgdir/firmware"
+		fi
+		if [ -d "$imgdir/modules" ]; then
+			fbprint_n "[DEBUG] Copying $imgdir/modules/* to $RFSDIR/lib/modules"
+			$sudopt mkdir -p "$RFSDIR/lib/modules"
+			$sudopt cp -a "$imgdir/modules/." "$RFSDIR/lib/modules/"
+			fbprint_d "Copied modules contents to $RFSDIR/lib/modules"
+		else
+			fbprint_w "Modules folder not found at $imgdir/modules"
+		fi
+		# Show state after copy
+		fbprint_n "[DEBUG] After copy: ls -ld $RFSDIR/lib/firmware $RFSDIR/lib/modules"
+		ls -ld "$RFSDIR/lib/firmware" "$RFSDIR/lib/modules" || true
+
+	fi
+
+	fbprint_d $RFSDIR
+	}
