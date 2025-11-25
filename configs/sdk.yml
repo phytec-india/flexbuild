@@ -33,7 +33,7 @@ PKG_GROUPS_ROBOTICS: n
 DEFAULT_SOC_FAMILY: IMX
 
 # force build in docker environment
-FORCE_BUILD_IN_DOCKER: y
+FORCE_BUILD_IN_DOCKER: n
 
 # choose one of the 3 ways to fetch/update repo for various use cases
 UPDATE_REPO_PER_TAG: y
