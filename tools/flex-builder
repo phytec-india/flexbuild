@@ -1072,6 +1072,31 @@ export ARCH DESTARCH CROSS_COMPILE FBDIR DESTDIR RFSDIR JOBS COMPONENT MACHINE K
        PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_PATH DEFAULT_REPO_TAG LOG_MUTE
 
 case "$1" in
+        do_wic-clean)
+            if [ "$MACHINE" = "imx8mm_phygate-tauri-l" ] && [ "$DESTARCH" = "arm64" ]; then
+                echo "[INFO] Cleaning up .wic image and mount directories for $MACHINE ($DESTARCH)"
+                rm -f imx8m_image_imx8mm_phygate-tauri-l.wic
+                sudo umount /mnt/imx8boot 2>/dev/null || true
+                sudo umount /mnt/imx8root 2>/dev/null || true
+                sudo rmdir /mnt/imx8boot /mnt/imx8root 2>/dev/null || true
+                echo "[INFO] do_wic-clean completed."
+                exit
+            else
+                echo "[ERROR] do_wic-clean only supports MACHINE=imx8mm_phygate-tauri-l and arm64. Exiting."
+                exit 1
+            fi
+            ;;
+
+        do_wic)
+            if [ "$MACHINE" = "imx8mm_phygate-tauri-l" ] && [ "$DESTARCH" = "arm64" ]; then
+                echo "[INFO] Running custom .wic image creation for $MACHINE ($DESTARCH)"
+                make -f "$FBDIR/tools/imx8mm_phygate-tauri-l.wic.mk" create_image MACHINE=$MACHINE
+                exit
+            else
+                echo "[ERROR] do_wic only supports MACHINE=imx8mm_phygate-tauri-l and arm64. Exiting."
+                exit 1
+            fi
+            ;;
     repo-fetch)
         git_repo_update fetch $2; exit
         ;;
