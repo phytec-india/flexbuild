@@ -94,7 +94,6 @@ linux-phytec:
 	$(MAKE) linux-core KERNEL_PATH="$(FBDIR)/components_lsdk2506/linux/linux-phytec" KERNEL_TREE="linux-phytec" KERNEL_CFG="$(KERNEL_CFG)" FRAGMENT_CFG="$$FRAGMENT_CFG" KERNEL_OUTPUT_PATH="$(FBOUTDIR)/linux/linux-phytec/$(DESTARCH)/$(SOCFAMILY)/output"
 	ln -sf linux-phytec $(FBDIR)/build_lsdk2506/linux/kernel-phytec; 
 	rm -f $(FBDIR)/build_lsdk2506/linux/linux-phytec/linux-phytec; 
-	$(MAKE) linux-core KERNEL_PATH="$(FBDIR)/components_lsdk2506/linux/linux-phytec" KERNEL_TREE="linux-phytec" KERNEL_CFG="$(KERNEL_CFG)" FRAGMENT_CFG="$$FRAGMENT_CFG" KERNEL_OUTPUT_PATH="$(FBOUTDIR)/linux/linux-phytec/$(DESTARCH)/$(SOCFAMILY)/output"
 
 linux-core:
 	cd $(KERNEL_PATH) && \
