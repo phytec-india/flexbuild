@@ -20,11 +20,41 @@ BOOT_PART_START_MB := 4
 BOOT_PART_SIZE_MB := 100
 
 # === Paths ===
-IMAGES_DIR := $(CURDIR)
+# Default images/output directory. Prefer repo's `build_lsdk2506/images`
+# folder by anchoring to the Makefile location so behavior is independent
+# of where `make` is invoked. If `IMAGES_DIR` is set in the environment it
+# will be honored, otherwise defaults to the repo build images location.
+# This path is used to find both `imx-boot` (bootloader) and the rootfs
+# tarball(s) produced by the normal build output.
+#! Tip: Put `imx-boot` and `rootfs_*.tar.zst` in `build_lsdk2506/images`
+#! to let the Makefile find them by default.
+IMAGES_DIR ?= $(abspath $(MAKEFILE_DIR)/../build_lsdk2506/images)
+
+# Directory where this Makefile lives. Use this so we can resolve paths
+# relative to the repo layout independent of the current working directory
+# when 'make' is invoked.
+MAKEFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WIC_IMAGE := $(IMAGES_DIR)/$(IMAGE_NAME)
 BOOT_DIR := $(IMAGES_DIR)/boot_IMX_arm64_phytec/boot_partition_phygate-tauri-imx8mm
-BOOTLOADER := $(IMAGES_DIR)/imx-boot
-ROOTFS_TARBALL := $(shell ls -1t $(CURDIR)/rootfs_lsdk2506_debian_desktop_arm64_*.tar.zst 2>/dev/null | head -n1)
+# Default bootloader location - prefer IMAGES_DIR but fall back to the
+# repo root or the Makefile dir if required. A user can override by
+# exporting BOOTLOADER env var when invoking `make`.
+BOOTLOADER ?= $(IMAGES_DIR)/imx-boot
+# === Rootfs selection ===
+# By default, look for rootfs tarballs in the build images folder (source of generated tarballs):
+#   <top-of-repo>/build_lsdk2506/images
+# We anchor this to the directory where the Makefile is located so the
+# lookup is independent of the directory where `make` is invoked.
+# If not found there, fallback to some likely locations in this order:
+#   - Makefile dir (useful when running from tools/)
+#   - Currrent working dir (for local overrides)
+# Users can override entirely by setting ROOTFS_TARBALL env var when invoking make.
+ROOTFS_DIR ?= $(abspath $(MAKEFILE_DIR)/../build_lsdk2506/images)
+
+ROOTFS_SEARCH_DIRS := $(ROOTFS_DIR) $(abspath $(MAKEFILE_DIR)) $(CURDIR)
+
+# Find the most recent matching tarball from the list of search dirs
+ROOTFS_TARBALL ?= $(strip $(shell for d in $(ROOTFS_SEARCH_DIRS); do ls -1t "$$d"/rootfs_lsdk2506_debian_desktop_arm64_*.tar.zst 2>/dev/null | head -n1 && break; done))
 
 MOUNT_BOOT := /mnt/imx8boot
 MOUNT_ROOT := /mnt/imx8root
@@ -36,21 +66,47 @@ REQUIRED_TOOLS := dd parted sfdisk losetup mkfs.fat mkfs.ext4 tar realpath stat
 create_image:
 	@echo "[INFO] Checking required tools..."
 	for t in $(REQUIRED_TOOLS); do command -v $$t >/dev/null 2>&1 || { echo "[ERROR] Required tool '$$t' not found in PATH"; exit 1; }; done
-	echo "[DEBUG] ROOTFS_TARBALL resolved to: $(ROOTFS_TARBALL)"
+	echo "[DEBUG] IMAGES_DIR: $(IMAGES_DIR)"
+	echo "[DEBUG] ROOTFS search directories: $(ROOTFS_SEARCH_DIRS)"
+	if [ -n "$(ROOTFS_TARBALL)" ]; then echo "[DEBUG] ROOTFS_TARBALL (final): $(ROOTFS_TARBALL)"; fi
 	if [ -z "$(ROOTFS_TARBALL)" ] || [ ! -f "$(ROOTFS_TARBALL)" ]; then
-		echo -e "\033[1;31m[ERROR] Rootfs tarball not found in $(CURDIR)\033[0m"
+			echo -e "\033[1;31m[ERROR] Rootfs tarball not found. Checked: $(ROOTFS_SEARCH_DIRS).\nPlease place rootfs in '$(ROOTFS_DIR)' (repo build images), or set ROOTFS_TARBALL=/path/to/rootfs.tar.zst to override.\033[0m"
 		exit 1
+	fi
+	# If the explicitly defined or default bootloader location isn't present,
+	# attempt reasonable fallbacks and print helpful diagnostics.
+	if [ ! -f "$(BOOTLOADER)" ]; then
+		# Try makefile dir build images (same as default IMAGES_DIR), then repo root
+		try1="$(abspath $(MAKEFILE_DIR)/../build_lsdk2506/images)/imx-boot"
+		try2="$(abspath $(MAKEFILE_DIR))/../imx-boot"
+		try3="$(CURDIR)/imx-boot"
+		if [ -f "$$try1" ]; then BOOTLOADER="$$try1"; fi
+		if [ -f "$$try2" ]; then BOOTLOADER="$$try2"; fi
+		if [ -f "$$try3" ]; then BOOTLOADER="$$try3"; fi
 	fi
 	if [ ! -f "$(BOOTLOADER)" ]; then
-		echo -e "\033[1;31m[ERROR] Bootloader not found: $(BOOTLOADER)\033[0m"
+		checked_boots="$(BOOTLOADER) $$try1 $$try2 $$try3"
+		echo -e "\033[1;31m[ERROR] Bootloader not found. Checked: $$checked_boots\nPlease put 'imx-boot' in $(IMAGES_DIR) or set BOOTLOADER=/path/to/imx-boot to override.\033[0m"
 		exit 1
 	fi
+	echo "[DEBUG] BOOTLOADER (final): $(BOOTLOADER)"
 	if [ ! -d "$(BOOT_DIR)" ]; then
-		echo -e "\033[1;31m[ERROR] Boot directory not found: $(BOOT_DIR)\033[0m"
+		# try common fallbacks for boot dir
+		boot_try1="$(abspath $(MAKEFILE_DIR)/../build_lsdk2506/images)/boot_IMX_arm64_phytec/boot_partition_phygate-tauri-imx8mm"
+		boot_try2="$(abspath $(MAKEFILE_DIR))/boot_IMX_arm64_phytec/boot_partition_phygate-tauri-imx8mm"
+		boot_try3="$(CURDIR)/boot_IMX_arm64_phytec/boot_partition_phygate-tauri-imx8mm"
+		if [ -d "$$boot_try1" ]; then BOOT_DIR="$$boot_try1"; fi
+		if [ -d "$$boot_try2" ]; then BOOT_DIR="$$boot_try2"; fi
+		if [ -d "$$boot_try3" ]; then BOOT_DIR="$$boot_try3"; fi
+	fi
+	if [ ! -d "$(BOOT_DIR)" ]; then
+		echo -e "\033[1;31m[ERROR] Boot directory not found: $(BOOT_DIR)\nChecked: $$boot_try1 $$boot_try2 $$boot_try3\033[0m"
 		exit 1
 	fi
 
 	echo -e "\033[0;32m[INFO] Starting image generation for MACHINE=$(MACHINE)\033[0m"
+	echo "[DEBUG] WIC_IMAGE: $(WIC_IMAGE)"
+	echo "[DEBUG] BOOT_DIR: $(BOOT_DIR)"
 	echo -e "\033[0;32m[INFO] Creating blank image: $(WIC_IMAGE) ($(IMAGE_SIZE_MB) MB)\033[0m"
 	mkdir -p "$(IMAGES_DIR)"
 	sudo dd if=/dev/zero of="$(WIC_IMAGE)" bs=1M count=$(IMAGE_SIZE_MB) status=progress
